@@ -7,6 +7,8 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const nodemailer = require("nodemailer");
+const { type } = require("os");
 
 // Initialize Express app
 const app = express();
@@ -20,13 +22,31 @@ const JWT_SECRET =
 
 // MongoDB connection
 mongoose
-  .connect("mongodb://localhost:27017/elite", {
+  .connect("mongodb://localhost:27017/eliteApp", {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
   .then(() => console.log("MongoDB connected"))
   .catch((err) => console.error("MongoDB connection error:", err));
 
+
+const storage = multer.diskStorage({
+  destination: "./uploads/",
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  },
+});
+
+// File filter to allow only images
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith("image/")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only image files are allowed!"), false);
+  }
+};
+
+const upload = multer({ storage, fileFilter });
 // Models
 const userSchema = new mongoose.Schema(
   {
@@ -54,37 +74,61 @@ const activitySchema = new mongoose.Schema({
 const Activity = mongoose.model("Activity", activitySchema);
 
 let systemStatus = "Online"; // System status
+const assessmentSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  title: { type: String, required: true },
+  code: { type: String, required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  questions: [
+    {
+      type: { type: String, required: true },
+      question: { type: String, required: true },
+      options: { type: [String], default: [] },
+      correctAnswer: { type: String, default: "" },
+      keywords: { type: [String], default: [] },
+      description: { type: String, default: "" },
+      testCases: [
+        {
+          input: { type: String, required: true },
+          output: { type: String, required: true },
+        },
+      ],
+    },
+  ],
+});
+
+const Assessment = mongoose.model("Assessment", assessmentSchema);
+
+const responseSchema = new mongoose.Schema({
+  assessmentId: { type: String, required: true },
+  userId: { type: String, required: true },
+  answers: [{ questionId: String, answer: String }],
+  submittedAt: { type: Date, default: Date.now },
+});
+const Response = mongoose.model("Response", responseSchema);
+
 
 // Middleware for JWT authentication
 const authMiddleware = (req, res, next) => {
-  const token = req.header("Authorization")?.replace("Bearer ", "");
-  if (!token)
-    return res.status(401).json({ msg: "No token, authorization denied" });
-
   try {
+    const token = req.header("Authorization")?.replace("Bearer ", "");
+
+    if (!token) {
+      return res.status(401).json({ msg: "No token, authorization denied" });
+    }
+
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded.user;
+    req.user = decoded.user; // Ensure this includes an ID field
+
     next();
   } catch (err) {
-    res.status(401).json({ msg: "Invalid token" });
+    console.error("Middleware error:", err.message);
+    res.status(500).json({ msg: "Server error" });
   }
 };
 
-// Multer setup for profile image uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = "uploads/profileImages";
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${req.user.id}-${Date.now()}${path.extname(file.originalname)}`);
-  },
-});
-const upload = multer({ storage });
 
 // Routes
-
 // User Signup
 app.post("/signup", async (req, res) => {
   const { name, email, role, password, confirmPassword } = req.body;
@@ -171,6 +215,43 @@ app.get("/users", async (req, res) => {
     res.status(500).json({ msg: "Error fetching users", error: err.message });
   }
 });
+
+app.get("/uploads/:filename", (req, res) => {
+  const { filename } = req.params;
+  res.sendFile(path.join(__dirname, "../uploads", filename));
+});
+
+
+app.put(
+  "/user/update",
+  authMiddleware, // Verify JWT token
+  upload.single("profileImage"), // Handle profile image upload
+  async (req, res) => {
+    try {
+      const userId = req.user.id; // User ID from JWT token
+      const { contact, bio, mail, qualification, location } = req.body;
+      const updates = { contact, bio, mail, qualification, location };
+
+      // Check if a profile image was uploaded
+      if (req.file) {
+        updates.profileImage = `/uploads/${req.file.filename}`;
+      }
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        { $set: updates },
+        { new: true }
+      ).select("-password"); // Exclude password from response
+
+      res.json(updatedUser);
+    } catch (error) {
+      console.error("Error updating user profile:", error.message);
+      res
+        .status(500)
+        .json({ msg: "Error updating profile", error: error.message });
+    }
+  }
+);
 // Delete User
 app.delete("/users/:id", authMiddleware, async (req, res) => {
   try {
@@ -222,32 +303,8 @@ app.put("/users/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// Update Password
-app.put("/users/update-password", authMiddleware, async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
 
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ msg: "User not found" });
 
-    const isMatch = await bcrypt.compare(currentPassword, user.password);
-    if (!isMatch)
-      return res.status(400).json({ msg: "Incorrect current password" });
-
-    user.password = await bcrypt.hash(newPassword, 10);
-    await user.save();
-
-    await new Activity({
-      description: `User ${user.name} updated their password.`,
-      userId: user._id,
-    }).save();
-    res.json({ msg: "Password updated successfully" });
-  } catch (err) {
-    res
-      .status(500)
-      .json({ msg: "Error updating password", error: err.message });
-  }
-});
 
 // Get Recent Activities
 app.get("/activities", async (req, res) => {
@@ -282,6 +339,150 @@ app.get("/user/me", authMiddleware, async (req, res) => {
 app.post("/status/update", (req, res) => {
   systemStatus = req.body.status || systemStatus;
   res.json({ msg: "System status updated", status: systemStatus });
+});
+const generateAssessmentCode = () => {
+  return `ASSESS-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+};
+
+// POST endpoint to create a new assessment
+
+
+app.get("/api/assessments", authMiddleware, async (req, res) => {
+  try {
+    // Filter assessments by userId
+    const assessments = await Assessment.find({ userId: req.userId });
+    res.json(assessments);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching assessments", error });
+  }
+});
+
+// Updated backend route
+app.post('/api/assessments',authMiddleware, async (req, res) => {
+  const { id, title, code, questions } = req.body;
+
+  // Validate request body
+  if (!id || !title || !code || !Array.isArray(questions) || questions.length === 0) {
+    return res.status(400).json({ message: 'Assessment data is missing.' });
+  }
+
+  try {
+    // Create a new assessment with the associated userId
+    const newAssessment = new Assessment({
+      id,
+      title,
+      code,
+      questions,
+      userId:req.user.id, // Associate the assessment with the user
+    });
+    await newAssessment.save();
+    return res.status(201).json(newAssessment);
+  } catch (error) {
+    console.error('Error saving assessment:', error);
+    return res.status(500).json({ message: 'Error saving assessment.' });
+  }
+});
+
+
+// GET endpoint to retrieve all assessments
+
+
+
+app.get("/api/assessments/:code", async (req, res) => {
+  try {
+    const { code } = req.params;
+    const assessment = await Assessment.findOne({ code }).populate("questions"); // Populate if questions are in a separate model
+
+    if (!assessment) {
+      return res.status(404).json({ message: "Assessment not found" });
+    }
+
+    res.json({
+      id: assessment.id,
+      title: assessment.title,
+      code: assessment.code,
+      createdBy: assessment.createdBy,
+      questions: assessment.questions || [], // Ensure questions are included
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error });
+  }
+});
+
+
+// Submit short answer or multiple-choice
+// POST route to submit answers
+// POST route to submit answers
+app.post("/api/assessments/submit", async (req, res) => {
+  const { assessmentId, userId, answers } = req.body;
+
+  // Ensure answers are in the correct format
+  const formattedAnswers = answers.map(answer => {
+    return {
+      questionId: answer.questionId, // Make sure to include questionId
+      answer: answer.answer // This should be the user's answer
+    };
+  });
+
+  try {
+    // Create a new response document
+    const response = new Response({
+      assessmentId,
+      userId,
+      answers: formattedAnswers // Use formatted answers
+    });
+
+    // Save the response to the database
+    await response.save();
+    res.status(200).json({ message: "Submission successful" });
+  } catch (error) {
+    console.error("Error saving submission:", error);
+    res.status(500).json({ message: "Error saving submission", error: error.message });
+  }
+});
+
+app.post("/api/upload", upload.single("image"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded." }); // Always return JSON
+    }
+
+    // If file is uploaded successfully
+    return res.status(200).json({
+      message: "Image uploaded successfully",
+      filePath: `/uploads/${req.file.filename}`,
+    });
+  } catch (error) {
+    return res.status(500).json({ }); // Always return JSON on errors
+  }
+});
+
+
+// GET endpoint to retrieve all assessments for the authenticated user
+app.get("/api/assessments", authMiddleware, async (req, res) => {
+  try {
+    const assessments = await Assessment.find({ userId: req.user.id }).populate('questions');
+    res.json(assessments);
+  } catch (error) {
+    console.error("Error fetching assessments:", error);
+    res.status(500).json({ message: "Error fetching assessments", error: error.message });
+  }
+});
+
+// Serve static files from the uploads folder
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+app.delete("/api/assessments/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const assessment = await Assessment.findByIdAndDelete(id);
+    if (!assessment) {
+      return res.status(404).json({ message: "Assessment not found" });
+    }
+    res.status(200).json({ message: "Assessment deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error deleting assessment", error });
+  }
 });
 
 // Start Server
