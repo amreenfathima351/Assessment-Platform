@@ -46,6 +46,7 @@
 ## Demo
    
 - **Prototype:** [Figma](https://www.figma.com/proto/cK3fQsoPHqHyWu3wUqfbsy/Ass-platform?node-id=1-13&t=SZna1Dt9LnkdLMXv-1&starting-point-node-id=1%3A13)
+- **Link:** [Click](https://assessment-platform-frontend.vercel.app/)
 
 ---
 
