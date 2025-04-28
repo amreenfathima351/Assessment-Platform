@@ -54,13 +54,9 @@
 
 - **Frontend:** HTML, CSS, JavaScript
 - **Frontend Framework:** React, Tailwind CSS
-- **Backend:** Java, Python
-- **Backend Framework:** SpringBoot, Django
-- **Database:** PostgreSQL, MongoDB
+- **Backend:** Node.js, Express.js
+- **Database:** MongoDB
 - **Authentication:** JWT
-- **Cloud Storage:** AWS S3
-- **Tools:** Docker, Github Actions, Kubernetes
-- **Hosting:** AWS EC2
 
 ---
 
